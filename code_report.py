@@ -64,6 +64,15 @@ import re
 import zipfile
 import subprocess
 
+# Force UTF-8 console output to avoid UnicodeEncodeError on Chinese logs.
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 from datetime import datetime
 from pathlib import Path
 #import pandas as pd       #由于这几个包加载耗时比较长 所以改为在函数内import
@@ -472,7 +481,7 @@ def load_config(config_path):
     global window_width, window_height
     global update_testinfo_current_value, create_folder_current_value, download_spec_current_value,with_foldername_current_value,with_foldername1_current_value
     global search_test_criteria_current_value, search_object_criteria_current_value,search_test_criteria1_current_value
-    global compress_picture_current_value, time_sort_current_value, curve_generate_current_value,need_report_current_value
+    global compress_picture_current_value, time_sort_current_value, curve_generate_current_value,need_report_current_value,auto_pdf_convert_current_value
     global hide_page_current_value, cobo_register_type_current_value
     global equipment_file_version, data_character_current_value, sampling_frequency_current_value
     global x_unit_current_value, coordinate_typle_current_value, hyperlink_column_current_value
@@ -483,7 +492,7 @@ def load_config(config_path):
             print(f"配置文件不存在: {config_path}")
             return False
         
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with open(config_path, 'r', encoding='utf-8-sig') as f:
             config_data = json.load(f)
         # 地址
         #download_dir = config_data.get("download_dir", "")                                                #下载地址
@@ -497,6 +506,7 @@ def load_config(config_path):
         time_sort_current_value = report_options.get("time_sort_current_value", "")                                 #是否时间排序
         curve_generate_current_value = report_options.get("curve_generate_current_value", "")                            #是否生成曲线
         need_report_current_value=report_options.get("need_report_current_value", "")                      #是否需要报告
+        auto_pdf_convert_current_value = report_options.get("auto_pdf_convert_current_value", 1)          #上传前自动转PDF
         #设备
         equipment_list = config_data.get("equipment_list", [])                                            #设备信息
         equipment_file_version = config_data.get("equipment_file_version", "")                            #设备清单版本
@@ -505,8 +515,12 @@ def load_config(config_path):
         #审批人
         approvals_data = config_data.get("approval_data", {})                                             #审批人信息
         approval_list = approvals_data.get("approval_list", [])
-        first_approval_current_value = approvals_data.get("first_approval_current_value", "")                           #审批人1默认值
-        second_approval_current_value = approvals_data.get("second_approval_current_value", "")                           #审批人2默认值
+        first_approval_current_value = approvals_data.get("first_approval_current_value", -1)                           #审批人1默认值
+        second_approval_current_value = approvals_data.get("second_approval_current_value", -1)                           #审批人2默认值
+        if isinstance(first_approval_current_value, str):
+            first_approval_current_value = int(first_approval_current_value) if first_approval_current_value.isdigit() else -1
+        if isinstance(second_approval_current_value, str):
+            second_approval_current_value = int(second_approval_current_value) if second_approval_current_value.isdigit() else -1
         #收件人 
         recipients_list = config_data.get("recipients_list", [])                                          #收件人信息
          # 窗口大小
@@ -552,7 +566,9 @@ def load_config(config_path):
         
         #是否覆盖原数据
         overwrite_current_value = config_data.get("overwrite_current_value", "")                  #是否覆盖原数据
-        cobo_team_name_current_value=config_data.get("cobo_team_name_current_value", "")                          #小组名称
+        cobo_team_name_current_value=config_data.get("cobo_team_name_current_value", 0)                          #小组名称
+        if isinstance(cobo_team_name_current_value, str):
+            cobo_team_name_current_value = int(cobo_team_name_current_value) if cobo_team_name_current_value.isdigit() else 0
         print(f"配置已从 {config_path} 加载")
         return True
         
@@ -585,7 +601,8 @@ def save_config(config_path):
                 "compress_picture_current_value": generate_report.compress_picture.get(),
                 "time_sort_current_value": generate_report.time_sort.get(),
                 "curve_generate_current_value": generate_report.curve_generate.get(),
-                "need_report_current_value":generate_report.need_report.get()
+                "need_report_current_value":generate_report.need_report.get(),
+                "auto_pdf_convert_current_value":generate_report.auto_pdf_convert.get()
             },
             "equipment_list": equipment_list,
             "equipment_file_version": equipment_file_version,
@@ -1484,7 +1501,10 @@ class AdvancedCopyApp:
         #tkinter.Label(tool_frame, text='小组名 ').pack(side="right", fill="x", expand=True, padx=5)
         self.cobo_team_name = ttk.Combobox(tool_frame, width=8, values=teamlist,state="readonly")
         self.cobo_team_name.pack(side="right", expand=True)
-        self.cobo_team_name.current(cobo_team_name_current_value)
+        team_index = cobo_team_name_current_value if isinstance(cobo_team_name_current_value, int) else 0
+        if team_index < 0 or team_index >= len(teamlist):
+            team_index = 0
+        self.cobo_team_name.current(team_index)
 
 
         # 文件夹选择框架
@@ -1958,6 +1978,8 @@ class GenerateTestReport:
         self.data_title_input = tkinter.StringVar()            #Data titles
         self.need_report=tkinter.IntVar()                      #是否需要报告
         self.need_report.set(need_report_current_value)   
+        self.auto_pdf_convert=tkinter.IntVar()                 #上传前自动转PDF
+        self.auto_pdf_convert.set(auto_pdf_convert_current_value)
         self.first_approval=None
         self.second_approval=None
         self.equipment_select=None
@@ -2024,6 +2046,7 @@ class GenerateTestReport:
         tkinter.Entry(report_frame, width=16, textvariable=self.data_title_input).grid(row=3, column=2, sticky=W)  # title 输入框
         ttk.Button(report_frame, text='上传data', width=8, command=lambda:run_thread(generate_report.upload_data,'upload_data')).grid(row=3, column=3, padx=5, sticky=W)
         tkinter.Checkbutton(report_frame, text='是否需要报告', variable=self.need_report, onvalue=1, offvalue=0).grid(row=3, column=4, padx=5,sticky=W)
+        tkinter.Checkbutton(report_frame, text='上传前转PDF', variable=self.auto_pdf_convert, onvalue=1, offvalue=0).grid(row=3, column=5, padx=5, sticky=W)
 
 
         tkinter.Label(report_frame, text='添加设备').grid(row=4, column=1, sticky=W) 
@@ -2040,12 +2063,12 @@ class GenerateTestReport:
         #ttk.Button(report_frame, text='清空', width=4, command=lambda:clear_input(self.post_conclusion_select)).grid(row=6, column=6, padx=5, sticky=W)
         tkinter.Label(report_frame, text='审批人1', width=12).grid(row=7, column=1, stick=NW)
         self.first_approval = ttk.Combobox(report_frame, width=27, values=approval_list)
-        if first_approval_current_value != -1:
+        if approval_list and 0 <= first_approval_current_value < len(approval_list):
             self.first_approval.current(first_approval_current_value)
         self.first_approval.grid(row=7, column=2, columnspan=2, sticky=NW)
         tkinter.Label(report_frame, text='审批人2', width=12).grid(row=8, column=1, stick=NW)
         self.second_approval = ttk.Combobox(report_frame, width=27, values=approval_list)
-        if second_approval_current_value != -1:
+        if approval_list and 0 <= second_approval_current_value < len(approval_list):
             self.second_approval.current(second_approval_current_value)
         self.second_approval.grid(row=8, column=2, columnspan=2, sticky=NW)
 
@@ -2394,6 +2417,63 @@ class GenerateTestReport:
         picture.save(compressed_picture_path, quality=quality)
         return compressed_picture_path
 
+    def convert_word_to_pdf(self, report_path):
+        """Convert a Word report (.doc/.docx) to PDF in the same folder."""
+        if not report_path:
+            return None
+
+        suffix = Path(report_path).suffix.lower()
+        if suffix not in [".doc", ".docx"]:
+            showinfo(generate_report.report_status, f'当前文件不是Word格式，跳过PDF转换: {report_path}', "black")
+            return None
+
+        pdf_path = str(Path(report_path).with_suffix(".pdf"))
+        word_app = None
+        word_doc = None
+        try:
+            word_app = win32com.client.DispatchEx("Word.Application")
+            word_app.Visible = False
+            word_app.DisplayAlerts = 0
+            word_doc = word_app.Documents.Open(report_path)
+            # 17 = wdFormatPDF
+            word_doc.SaveAs(pdf_path, FileFormat=17)
+            showinfo(generate_report.report_status, f'报告PDF已生成: {pdf_path}', "green")
+            return pdf_path
+        except Exception as e:
+            showinfo(generate_report.report_status, f'报告PDF转换失败，继续上传Word: {str(e)}', "red")
+            return None
+        finally:
+            try:
+                if word_doc is not None:
+                    word_doc.Close(False)
+            except Exception:
+                pass
+            try:
+                if word_app is not None:
+                    word_app.Quit()
+            except Exception:
+                pass
+
+    def _pick_report_for_upload(self, test_report_path):
+        """Pick report file by newest mtime; prefer Word reports when available."""
+        word_candidates = []
+        ts_candidates = []
+        for file_name in os.listdir(test_report_path):
+            if not file_name.startswith('TS'):
+                continue
+            file_path = os.path.join(test_report_path, file_name)
+            if not os.path.isfile(file_path):
+                continue
+            ts_candidates.append(file_path)
+            if file_name.lower().endswith('.doc') or file_name.lower().endswith('.docx'):
+                word_candidates.append(file_path)
+
+        if word_candidates:
+            return max(word_candidates, key=os.path.getmtime)
+        if ts_candidates:
+            return max(ts_candidates, key=os.path.getmtime)
+        return ''
+
 
     #上传测试报告        
     def upload_test_report(self):
@@ -2422,17 +2502,16 @@ class GenerateTestReport:
                     max_progress_value=0
                     sys.exit(1)
                 else:
-                    file_list = os.listdir(test_report_path)
-                    for file in file_list:  # 在报告文件夹中搜索是否存在报告
-                        if file.startswith('TS'):
-                            report_dir = test_report_path + '\\' + file
-                            break
+                    report_dir = self._pick_report_for_upload(test_report_path)
+
                     if report_dir == '':
                         showinfo(generate_report.report_status,'报告文件夹内无报告文件,无法上传',"red")
                         tkinter.messagebox.showinfo('提示', '报告文件夹内无报告文件,无法上传')
                         max_progress_value=0
                     else:
                         try:        
+                            if self.auto_pdf_convert.get() == 1:
+                                self.convert_word_to_pdf(report_dir)
                             if driver is None or 'laboratories' not in driver.current_url:
                                 initial_browser(laboratories)
                                 #driver.maximize_window()     
@@ -3994,13 +4073,19 @@ class UpdateTestPlan:
         tkinter.Label(basic_frame, text="试验类型", width=8).grid(row=1, column=2)
         self.cobo_test_type = ttk.Combobox(basic_frame, width=5)
         self.cobo_test_type['value'] = ('单个', '序列')
-        self.cobo_test_type.current(cobo_test_type_current_value)
+        test_type_index = cobo_test_type_current_value if isinstance(cobo_test_type_current_value, int) else 0
+        if test_type_index < 0 or test_type_index > 1:
+            test_type_index = 0
+        self.cobo_test_type.current(test_type_index)
         self.cobo_test_type.grid(row=1, column=3)
 
         tkinter.Label(basic_frame, text="登记类型", width=8).grid(row=1, column=4)
         self.cobo_register_type = ttk.Combobox(basic_frame, width=5)
         self.cobo_register_type['value'] = ('试验', '项目')
-        self.cobo_register_type.current(cobo_register_type_current_value)
+        register_type_index = cobo_register_type_current_value if isinstance(cobo_register_type_current_value, int) else 0
+        if register_type_index < 0 or register_type_index > 1:
+            register_type_index = 0
+        self.cobo_register_type.current(register_type_index)
         self.cobo_register_type.grid(row=1, column=5)
         #update_item_frame
         update_item_frame=tkinter.LabelFrame(plan_frame,text='更新类型选择',font='Arial 12 bold italic')
@@ -4496,6 +4581,8 @@ ws2 = None   #下载表sheet
 
 illegal_chars = r'[<>:"/\|?*]'    #非法字符     
 needreport=1          #  1:需要报告，0：不需要报告
+need_report_current_value=1  # 是否需要报告（默认值）
+auto_pdf_convert_current_value=1  # 上传报告前自动转PDF（默认开启）
 
 active_threadlist=['generate_test_report','update','upload_test_report','upload_data','upload_link','generate_curve','copy','cut','update_test_spec','update_test_status']   
 #test_status_list=['CREATED','INQUIRED','PLANNED','TEST_OBJECTS_AVAILABLE','IN_PROGRESS','PERFORMED','ASSESSED','ASSESSED_REVIEWED','COMMENTED','COMPLETED','CHANGED','PAUSED']
